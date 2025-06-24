@@ -1,0 +1,66 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: webapp-alerts
+  namespace: webapp
+  labels:
+    app: webapp
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+  - name: webapp.rules
+    rules:
+    - alert: BackendDown
+      expr: up{job="backend-monitor"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Backend API is down"
+        description: "Backend API has been down for more than 1 minute."
+    
+    - alert: FrontendDown
+      expr: up{job="frontend-monitor"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Frontend is down"
+        description: "Frontend has been down for more than 1 minute."
+    
+    - alert: HighErrorRate
+      expr: rate(http_requests_total{status_code=~"5.."}[5m]) > 0.1
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate detected"
+        description: "Error rate is {{ $value }} errors per second for the last 5 minutes."
+    
+    - alert: HighResponseTime
+      expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 1
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High response time detected"
+        description: "95th percentile response time is {{ $value }} seconds."
+    
+    - alert: TooManyMessages
+      expr: messages_total > 10
+      for: 1m
+      labels:
+        severity: info
+      annotations:
+        summary: "Many messages stored"
+        description: "There are {{ $value }} messages stored in the backend."
+    
+    - alert: NginxHighConnections
+      expr: nginx_connections_active > 100
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High number of active connections"
+        description: "Nginx has {{ $value }} active connections."

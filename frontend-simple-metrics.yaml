@@ -1,0 +1,307 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-app
+  namespace: webapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-app
+  template:
+    metadata:
+      labels:
+        app: frontend-app
+    spec:
+      containers:
+      - name: frontend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            # Create nginx config with status endpoint
+            cat > /etc/nginx/conf.d/default.conf << 'EOF'
+            server {
+                listen 80;
+                server_name localhost;
+                
+                location / {
+                    root /usr/share/nginx/html;
+                    index index.html;
+                }
+                
+                location /nginx_status {
+                    stub_status on;
+                    access_log off;
+                    allow all;
+                }
+            }
+            EOF
+
+            cat > /usr/share/nginx/html/index.html << 'EOF'
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>K3s Web App Demo</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        max-width: 800px;
+                        margin: 0 auto;
+                        padding: 20px;
+                        background-color: #f5f5f5;
+                    }
+                    .container {
+                        background: white;
+                        padding: 30px;
+                        border-radius: 10px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }
+                    h1 {
+                        color: #333;
+                        text-align: center;
+                    }
+                    .form-group {
+                        margin: 20px 0;
+                    }
+                    input[type="text"] {
+                        width: 70%;
+                        padding: 10px;
+                        border: 1px solid #ddd;
+                        border-radius: 5px;
+                    }
+                    button {
+                        padding: 10px 20px;
+                        margin: 5px;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-size: 14px;
+                    }
+                    .btn-primary {
+                        background-color: #007bff;
+                        color: white;
+                    }
+                    .btn-danger {
+                        background-color: #dc3545;
+                        color: white;
+                    }
+                    .btn-info {
+                        background-color: #17a2b8;
+                        color: white;
+                    }
+                    .messages {
+                        margin-top: 20px;
+                        padding: 20px;
+                        background-color: #f8f9fa;
+                        border-radius: 5px;
+                        min-height: 200px;
+                    }
+                    .message {
+                        padding: 10px;
+                        margin: 5px 0;
+                        background-color: white;
+                        border-left: 4px solid #007bff;
+                        border-radius: 3px;
+                    }
+                    .status {
+                        padding: 10px;
+                        margin: 10px 0;
+                        border-radius: 5px;
+                    }
+                    .status.success {
+                        background-color: #d4edda;
+                        color: #155724;
+                        border: 1px solid #c3e6cb;
+                    }
+                    .status.error {
+                        background-color: #f8d7da;
+                        color: #721c24;
+                        border: 1px solid #f5c6cb;
+                    }
+                    .monitoring-info {
+                        background-color: #e7f3ff;
+                        border: 1px solid #b3d9ff;
+                        padding: 15px;
+                        border-radius: 5px;
+                        margin: 20px 0;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🚀 K3s Web App Demo</h1>
+                    <p>This frontend connects to a backend API running in your k3s cluster!</p>
+                    
+                    <div class="monitoring-info">
+                        <h4>📊 Monitoring Enabled</h4>
+                        <p>This application is now monitored with Prometheus metrics and Grafana dashboards!</p>
+                        <ul>
+                            <li>Backend API metrics: Request counts, response times, message counts</li>
+                            <li>Frontend metrics: Nginx connection stats, request rates</li>
+                            <li>Grafana Dashboard: <a href="http://localhost:3000" target="_blank">http://localhost:3000</a></li>
+                        </ul>
+                    </div>
+                    
+                    <div class="form-group">
+                        <input type="text" id="messageInput" placeholder="Enter a message..." />
+                        <button class="btn-primary" onclick="addMessage()">Add Message</button>
+                        <button class="btn-info" onclick="loadMessages()">Refresh</button>
+                        <button class="btn-danger" onclick="clearMessages()">Clear All</button>
+                    </div>
+                    
+                    <div id="status"></div>
+                    
+                    <div class="messages">
+                        <h3>Messages from Backend:</h3>
+                        <div id="messagesList">
+                            <p>Click "Refresh" to load messages from the backend API</p>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    const API_BASE = 'http://localhost:3001/api';
+                    
+                    function showStatus(message, isError = false) {
+                        const statusDiv = document.getElementById('status');
+                        statusDiv.innerHTML = `<div class="status ${isError ? 'error' : 'success'}">${message}</div>`;
+                        setTimeout(() => statusDiv.innerHTML = '', 3000);
+                    }
+                    
+                    async function addMessage() {
+                        const input = document.getElementById('messageInput');
+                        const text = input.value.trim();
+                        
+                        if (!text) {
+                            showStatus('Please enter a message', true);
+                            return;
+                        }
+                        
+                        try {
+                            const response = await fetch(`${API_BASE}/messages`, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({ text })
+                            });
+                            
+                            const result = await response.json();
+                            
+                            if (result.success) {
+                                showStatus('Message added successfully!');
+                                input.value = '';
+                                loadMessages();
+                            } else {
+                                showStatus('Failed to add message', true);
+                            }
+                        } catch (error) {
+                            showStatus(`Error: ${error.message}`, true);
+                        }
+                    }
+                    
+                    async function loadMessages() {
+                        try {
+                            const response = await fetch(`${API_BASE}/messages`);
+                            const data = await response.json();
+                            
+                            const messagesList = document.getElementById('messagesList');
+                            
+                            if (data.messages && data.messages.length > 0) {
+                                messagesList.innerHTML = data.messages.map(msg => 
+                                    `<div class="message">
+                                        <strong>#${msg.id}:</strong> ${msg.text}
+                                        <br><small>Added: ${new Date(msg.timestamp).toLocaleString()}</small>
+                                    </div>`
+                                ).join('');
+                                showStatus(`Loaded ${data.count} messages`);
+                            } else {
+                                messagesList.innerHTML = '<p>No messages yet. Add some messages using the form above!</p>';
+                            }
+                        } catch (error) {
+                            showStatus(`Error loading messages: ${error.message}`, true);
+                        }
+                    }
+                    
+                    async function clearMessages() {
+                        if (!confirm('Are you sure you want to clear all messages?')) {
+                            return;
+                        }
+                        
+                        try {
+                            const response = await fetch(`${API_BASE}/messages`, {
+                                method: 'DELETE'
+                            });
+                            
+                            const result = await response.json();
+                            
+                            if (result.success) {
+                                showStatus('All messages cleared!');
+                                loadMessages();
+                            } else {
+                                showStatus('Failed to clear messages', true);
+                            }
+                        } catch (error) {
+                            showStatus(`Error: ${error.message}`, true);
+                        }
+                    }
+                    
+                    // Load messages when page loads
+                    window.onload = loadMessages;
+                </script>
+            </body>
+            </html>
+            EOF
+
+            nginx -g 'daemon off;'
+      - name: nginx-exporter
+        image: nginx/nginx-prometheus-exporter:0.11.0
+        ports:
+        - containerPort: 9113
+          name: metrics
+        args:
+          - -nginx.scrape-uri=http://localhost/nginx_status
+          - -web.listen-address=:9113
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: webapp
+  labels:
+    app: frontend-app
+spec:
+  selector:
+    app: frontend-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: metrics
+      protocol: TCP
+      port: 9113
+      targetPort: 9113
+  type: ClusterIP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend-monitor
+  namespace: webapp
+  labels:
+    app: frontend-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend-app
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s

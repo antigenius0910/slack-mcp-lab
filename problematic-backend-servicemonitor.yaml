@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-problematic-monitor
+  namespace: monitoring
+  labels:
+    app: backend-api-problematic
+    release: grafana-stack
+spec:
+  selector:
+    matchLabels:
+      app: backend-api-problematic
+  namespaceSelector:
+    matchNames:
+    - webapp
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    scheme: http
+  - port: http
+    interval: 15s
+    path: /metrics
+    scheme: http

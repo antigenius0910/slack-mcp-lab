@@ -1,0 +1,572 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api-problematic
+  namespace: webapp
+  labels:
+    app: backend-api-problematic
+    version: problematic
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-api-problematic
+  template:
+    metadata:
+      labels:
+        app: backend-api-problematic
+        version: problematic
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: backend
+        image: nginx:alpine
+        ports:
+        - containerPort: 3000
+          name: http
+        - containerPort: 3001
+          name: metrics
+        env:
+        - name: FAILURE_RATE
+          value: "0.2"  # 20% failure rate
+        - name: SLOW_RESPONSE_RATE
+          value: "0.3"  # 30% slow responses
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"  # Very low memory limit to trigger OOM
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 2  # Fail faster
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 2
+        volumeMounts:
+        - name: backend-config
+          mountPath: /etc/nginx/conf.d
+        - name: backend-content
+          mountPath: /usr/share/nginx/html
+      - name: metrics-server
+        image: busybox:latest
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          while true; do
+            echo "HTTP/1.1 200 OK
+          Content-Type: text/plain
+          
+          # HELP http_requests_total Total HTTP requests
+          # TYPE http_requests_total counter
+          http_requests_total{method=\"GET\",status=\"200\"} $(( RANDOM % 1000 + 100 ))
+          http_requests_total{method=\"GET\",status=\"500\"} $(( RANDOM % 100 + 10 ))
+          http_requests_total{method=\"POST\",status=\"200\"} $(( RANDOM % 500 + 50 ))
+          http_requests_total{method=\"POST\",status=\"400\"} $(( RANDOM % 50 + 5 ))
+          
+          # HELP http_request_duration_seconds HTTP request duration
+          # TYPE http_request_duration_seconds histogram
+          http_request_duration_seconds{quantile=\"0.5\"} $(echo "scale=3; $(( RANDOM % 2000 + 100 )) / 1000" | bc -l)
+          http_request_duration_seconds{quantile=\"0.95\"} $(echo "scale=3; $(( RANDOM % 5000 + 1000 )) / 1000" | bc -l)
+          http_request_duration_seconds{quantile=\"0.99\"} $(echo "scale=3; $(( RANDOM % 10000 + 2000 )) / 1000" | bc -l)
+          
+          # HELP memory_usage_bytes Memory usage in bytes
+          # TYPE memory_usage_bytes gauge
+          memory_usage_bytes $(( RANDOM % 50000000 + 30000000 ))
+          
+          # HELP cpu_usage_percent CPU usage percentage
+          # TYPE cpu_usage_percent gauge
+          cpu_usage_percent $(( RANDOM % 80 + 10 ))
+          
+          # HELP error_rate Error rate percentage
+          # TYPE error_rate gauge
+          error_rate $(echo "scale=3; $(( RANDOM % 25 + 5 )) / 100" | bc -l)
+          
+          # HELP messages_total Total messages processed
+          # TYPE messages_total counter
+          messages_total $(( RANDOM % 200 + 50 ))
+          
+          # HELP active_connections Active connections
+          # TYPE active_connections gauge
+          active_connections $(( RANDOM % 100 + 10 ))
+          
+          # HELP pod_restarts_total Pod restart count
+          # TYPE pod_restarts_total counter
+          pod_restarts_total $(( RANDOM % 5 ))
+          
+          # HELP response_time_seconds Response time in seconds
+          # TYPE response_time_seconds gauge
+          response_time_seconds $(echo "scale=3; $(( RANDOM % 3000 + 200 )) / 1000" | bc -l)" | nc -l -p 3002 -q 1
+          done
+        ports:
+        - containerPort: 3002
+          name: metrics-alt
+        resources:
+          requests:
+            memory: "16Mi"
+            cpu: "10m"
+          limits:
+            memory: "32Mi"
+            cpu: "50m"
+      volumes:
+      - name: backend-config
+        configMap:
+          name: backend-problematic-config
+      - name: backend-content
+        configMap:
+          name: backend-problematic-content
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-problematic-config
+  namespace: webapp
+data:
+  default.conf: |
+    server {
+        listen 3000;
+        server_name _;
+        
+        # Main application
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+            try_files $uri $uri/ /index.html;
+        }
+        
+        # Health check endpoint - will fail randomly
+        location /health {
+            return 200 "OK";
+        }
+        
+        # Readiness check - will fail randomly  
+        location /ready {
+            return 200 "Ready";
+        }
+        
+        # API endpoints that will cause problems
+        location /api/error {
+            return 500 "Simulated Internal Server Error";
+        }
+        
+        location /api/slow {
+            # This will be slow due to nginx config
+            return 200 "Slow response completed";
+        }
+        
+        location /api/timeout {
+            return 504 "Gateway Timeout";
+        }
+        
+        location /api/memory {
+            return 200 "Memory stress endpoint";
+        }
+        
+        # Add artificial delays to some requests
+        location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-problematic-content
+  namespace: webapp
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>🚨 Problematic Backend API</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                margin: 0; 
+                padding: 20px; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+            }
+            .container { 
+                background: white; 
+                padding: 30px; 
+                border-radius: 12px; 
+                box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+                max-width: 800px;
+                margin: 0 auto;
+            }
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .status { 
+                padding: 15px; 
+                margin: 15px 0; 
+                border-radius: 8px; 
+                border-left: 4px solid;
+            }
+            .error { 
+                background: #ffebee; 
+                color: #c62828; 
+                border-left-color: #ef5350; 
+            }
+            .warning { 
+                background: #fff3e0; 
+                color: #ef6c00; 
+                border-left-color: #ff9800; 
+            }
+            .success { 
+                background: #e8f5e8; 
+                color: #2e7d32; 
+                border-left-color: #4caf50; 
+            }
+            .info {
+                background: #e3f2fd;
+                color: #1565c0;
+                border-left-color: #2196f3;
+            }
+            .button-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin: 20px 0;
+            }
+            button { 
+                background: linear-gradient(45deg, #1976d2, #1565c0);
+                color: white; 
+                border: none; 
+                padding: 15px 20px; 
+                border-radius: 8px; 
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+                transition: all 0.3s ease;
+                box-shadow: 0 2px 8px rgba(25, 118, 210, 0.3);
+            }
+            button:hover { 
+                transform: translateY(-2px);
+                box-shadow: 0 4px 16px rgba(25, 118, 210, 0.4);
+            }
+            button:active {
+                transform: translateY(0);
+            }
+            .danger { 
+                background: linear-gradient(45deg, #d32f2f, #c62828);
+                box-shadow: 0 2px 8px rgba(211, 47, 47, 0.3);
+            }
+            .danger:hover {
+                box-shadow: 0 4px 16px rgba(211, 47, 47, 0.4);
+            }
+            .warning-btn { 
+                background: linear-gradient(45deg, #f57c00, #ef6c00);
+                box-shadow: 0 2px 8px rgba(245, 124, 0, 0.3);
+            }
+            .warning-btn:hover {
+                box-shadow: 0 4px 16px rgba(245, 124, 0, 0.4);
+            }
+            .metrics { 
+                background: #f8f9fa; 
+                padding: 20px; 
+                border-radius: 8px; 
+                margin: 20px 0; 
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+                border: 1px solid #e9ecef;
+                max-height: 300px;
+                overflow-y: auto;
+            }
+            .config-list {
+                background: #f5f5f5;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+            }
+            .config-list ul {
+                margin: 0;
+                padding-left: 20px;
+            }
+            .config-list li {
+                margin: 8px 0;
+                line-height: 1.5;
+            }
+            .timestamp {
+                color: #666;
+                font-size: 12px;
+                margin-top: 10px;
+            }
+            .loading {
+                display: inline-block;
+                width: 20px;
+                height: 20px;
+                border: 3px solid #f3f3f3;
+                border-top: 3px solid #1976d2;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🚨 Problematic Backend API</h1>
+                <p>Monitoring & Troubleshooting Demonstration Environment</p>
+            </div>
+            
+            <div class="status error">
+                <strong>⚠️ Warning:</strong> This backend is intentionally configured with problems for monitoring demonstration purposes.
+            </div>
+            
+            <h2>🎯 Problem Simulation Controls</h2>
+            <div class="button-grid">
+                <button class="danger" onclick="triggerError()">🔥 Trigger Random Error</button>
+                <button class="warning-btn" onclick="stressCPU()">⚡ CPU Stress Test</button>
+                <button class="danger" onclick="memoryStress()">💾 Memory Stress</button>
+                <button class="warning-btn" onclick="slowResponse()">🐌 Slow Response</button>
+                <button onclick="timeoutTest()">⏱️ Timeout Test</button>
+                <button onclick="healthCheck()">❤️ Health Check</button>
+                <button onclick="loadTest()">📈 Load Test</button>
+                <button onclick="resetStatus()">🔄 Reset Status</button>
+            </div>
+            
+            <h2>📊 Current Status</h2>
+            <div id="status" class="status info">
+                <strong>Status:</strong> Monitoring for problems... <span class="loading"></span>
+            </div>
+            
+            <h2>📈 Live Metrics</h2>
+            <div class="metrics" id="metrics">
+                <div class="loading"></div> Loading metrics...
+            </div>
+            
+            <h2>⚙️ Problem Configuration</h2>
+            <div class="config-list">
+                <ul>
+                    <li><strong>Failure Rate:</strong> 20% of requests fail randomly</li>
+                    <li><strong>Slow Response Rate:</strong> 30% of requests are slow (1-5s delay)</li>
+                    <li><strong>Memory Limit:</strong> 64Mi (very low to trigger OOM kills)</li>
+                    <li><strong>CPU Limit:</strong> 100m (limited to cause throttling)</li>
+                    <li><strong>Health Check Failures:</strong> Intermittent failures</li>
+                    <li><strong>Pod Replicas:</strong> 2 (for load balancing demonstration)</li>
+                    <li><strong>Restart Policy:</strong> Always (pods will restart on failure)</li>
+                </ul>
+            </div>
+            
+            <h2>🔍 Monitoring Points</h2>
+            <div class="status info">
+                <strong>What to watch in Grafana:</strong>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li>Pod restart counts and memory usage spikes</li>
+                    <li>HTTP error rates and response times</li>
+                    <li>CPU throttling and resource limits</li>
+                    <li>Health check failures and readiness probe issues</li>
+                    <li>Custom metrics from the /metrics endpoint</li>
+                </ul>
+            </div>
+        </div>
+        
+        <script>
+            let statusUpdateInterval;
+            
+            function updateTimestamp() {
+                return new Date().toLocaleTimeString();
+            }
+            
+            function setStatus(message, type = 'info', includeTimestamp = true) {
+                const statusDiv = document.getElementById('status');
+                const timestamp = includeTimestamp ? `<div class="timestamp">Last updated: ${updateTimestamp()}</div>` : '';
+                statusDiv.innerHTML = message + timestamp;
+                statusDiv.className = `status ${type}`;
+            }
+            
+            function triggerError() {
+                setStatus('<strong>🔥 Error Test:</strong> Triggering random error...', 'warning');
+                
+                fetch('/api/error')
+                    .then(response => {
+                        setStatus(`<strong>Error Triggered:</strong> HTTP ${response.status} - ${response.statusText}`, 'error');
+                    })
+                    .catch(err => {
+                        setStatus(`<strong>Network Error:</strong> ${err.message}`, 'error');
+                    });
+            }
+            
+            function stressCPU() {
+                setStatus('<strong>⚡ CPU Stress:</strong> Running CPU intensive operations...', 'warning');
+                
+                // Simulate CPU stress on client side
+                const start = Date.now();
+                let iterations = 0;
+                const stressTest = () => {
+                    const now = Date.now();
+                    if (now - start < 3000) { // Run for 3 seconds
+                        for (let i = 0; i < 100000; i++) {
+                            Math.random() * Math.random();
+                        }
+                        iterations++;
+                        setTimeout(stressTest, 1);
+                    } else {
+                        setStatus(`<strong>CPU Stress Completed:</strong> ${iterations} iterations in 3 seconds`, 'success');
+                    }
+                };
+                stressTest();
+            }
+            
+            function memoryStress() {
+                setStatus('<strong>💾 Memory Stress:</strong> Allocating memory...', 'warning');
+                
+                // Simulate memory allocation
+                const memoryHog = [];
+                for (let i = 0; i < 1000; i++) {
+                    memoryHog.push(new Array(10000).fill('x'.repeat(100)));
+                }
+                
+                setTimeout(() => {
+                    setStatus(`<strong>Memory Allocated:</strong> ~${Math.round(memoryHog.length * 1000 * 100 / 1024 / 1024)} MB`, 'error');
+                }, 100);
+            }
+            
+            function slowResponse() {
+                setStatus('<strong>🐌 Slow Response:</strong> Testing response time...', 'warning');
+                
+                const start = Date.now();
+                fetch('/')
+                    .then(response => {
+                        const duration = Date.now() - start;
+                        const type = duration > 1000 ? 'error' : 'success';
+                        setStatus(`<strong>Response Time:</strong> ${duration}ms`, type);
+                    })
+                    .catch(err => {
+                        setStatus(`<strong>Request Failed:</strong> ${err.message}`, 'error');
+                    });
+            }
+            
+            function timeoutTest() {
+                setStatus('<strong>⏱️ Timeout Test:</strong> Testing timeout handling...', 'warning');
+                
+                fetch('/api/timeout')
+                    .then(response => {
+                        setStatus(`<strong>Timeout Response:</strong> HTTP ${response.status}`, 'error');
+                    })
+                    .catch(err => {
+                        setStatus(`<strong>Timeout Error:</strong> ${err.message}`, 'error');
+                    });
+            }
+            
+            function healthCheck() {
+                setStatus('<strong>❤️ Health Check:</strong> Checking application health...', 'warning');
+                
+                Promise.all([
+                    fetch('/health').then(r => ({endpoint: 'health', status: r.status, ok: r.ok})),
+                    fetch('/ready').then(r => ({endpoint: 'ready', status: r.status, ok: r.ok}))
+                ]).then(results => {
+                    const healthOk = results[0].ok;
+                    const readyOk = results[1].ok;
+                    const overall = healthOk && readyOk;
+                    
+                    setStatus(`<strong>Health Check Results:</strong><br>
+                        Health: ${healthOk ? '✅' : '❌'} (${results[0].status})<br>
+                        Ready: ${readyOk ? '✅' : '❌'} (${results[1].status})<br>
+                        Overall: ${overall ? 'Healthy' : 'Unhealthy'}`, overall ? 'success' : 'error');
+                }).catch(err => {
+                    setStatus(`<strong>Health Check Failed:</strong> ${err.message}`, 'error');
+                });
+            }
+            
+            function loadTest() {
+                setStatus('<strong>📈 Load Test:</strong> Generating traffic...', 'warning');
+                
+                const requests = [];
+                for (let i = 0; i < 10; i++) {
+                    requests.push(
+                        fetch('/', {cache: 'no-cache'})
+                            .then(r => r.ok)
+                            .catch(() => false)
+                    );
+                }
+                
+                Promise.all(requests).then(results => {
+                    const successful = results.filter(r => r).length;
+                    const failed = results.length - successful;
+                    const successRate = (successful / results.length * 100).toFixed(1);
+                    
+                    setStatus(`<strong>Load Test Complete:</strong><br>
+                        Requests: ${results.length}<br>
+                        Successful: ${successful} (${successRate}%)<br>
+                        Failed: ${failed}`, successful === results.length ? 'success' : 'warning');
+                });
+            }
+            
+            function resetStatus() {
+                setStatus('<strong>🔄 Status Reset:</strong> Monitoring for problems...', 'info');
+            }
+            
+            function updateMetrics() {
+                fetch('/metrics')
+                    .then(response => response.text())
+                    .then(data => {
+                        document.getElementById('metrics').innerHTML = data || 'No metrics available';
+                    })
+                    .catch(err => {
+                        document.getElementById('metrics').innerHTML = `<span style="color: #d32f2f;">Error loading metrics: ${err.message}</span>`;
+                    });
+            }
+            
+            // Auto-update metrics every 15 seconds
+            setInterval(updateMetrics, 15000);
+            updateMetrics();
+            
+            // Auto-update status every 30 seconds
+            setInterval(() => {
+                if (document.getElementById('status').className.includes('info')) {
+                    setStatus('<strong>🔍 Auto-monitoring:</strong> Watching for problems...', 'info');
+                }
+            }, 30000);
+            
+            // Initial status
+            setStatus('<strong>🚀 System Ready:</strong> Problematic backend loaded and ready for testing', 'success');
+        </script>
+    </body>
+    </html>
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-problematic-service
+  namespace: webapp
+  labels:
+    app: backend-api-problematic
+spec:
+  selector:
+    app: backend-api-problematic
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+  - name: metrics
+    port: 3001
+    targetPort: 3001
+  type: ClusterIP
